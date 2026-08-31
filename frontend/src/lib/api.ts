@@ -17,6 +17,7 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
 export const api = {
   get: <T>(path: string) => req<T>("GET", path),
   post: <T>(path: string, body?: unknown) => req<T>("POST", path, body),
+  del: <T>(path: string) => req<T>("DELETE", path),
 };
 
 // ---------- 类型 ----------
@@ -38,6 +39,14 @@ export interface Card {
   completeness: number;
 }
 
+export interface GanttSegment {
+  start: string;
+  end: string;
+  state: string;
+  summary: string;
+  engine: string;
+}
+
 export interface GanttRow {
   person_id: number;
   name: string;
@@ -45,6 +54,10 @@ export interface GanttRow {
   state_color: string;
   score: number;
   stage_label: string;
+  first_message: string | null;
+  last_message: string | null;
+  message_count: number;
+  segments: GanttSegment[];
   events: { time: string; type: string; summary: string; is_turning_point: boolean }[];
 }
 
@@ -115,6 +128,25 @@ export interface MatchResult {
 export interface TimelineData {
   events: { time: string; type: string; summary: string; stage: string; score_delta: number; is_turning_point: boolean }[];
   turning_points: { title: string; what: string; why: string; before: string; after: string; possible_causes: string[]; suggestion: string; confidence: number }[];
+}
+
+export interface WechatStatus {
+  configured: boolean;
+  reachable: boolean;
+}
+
+export interface WechatTarget {
+  username: string;
+  name: string;
+  display_name: string;
+  is_group: boolean;
+}
+
+export interface WechatTargets {
+  account: string;
+  source: string;
+  targets: WechatTarget[];
+  total: number;
 }
 
 export const STATE_COLORS: Record<string, string> = {

@@ -12,18 +12,29 @@ const LEGEND = [
   { key: "coldwar", label: "冷战/踩雷", color: "#dc2626" },
   { key: "ended", label: "已结束", color: "#4b5563" },
 ];
-const RANGES: Record<string, { start: string; end: string; label: string }> = {
-  "3m": { start: "2026-05-01", end: "2026-08-01", label: "3个月" },
-  "6m": { start: "2026-02-01", end: "2026-08-01", label: "6个月" },
-  ytd: { start: "2026-01-01", end: "2026-08-01", label: "全部" },
-};
+// 以今天为基准动态计算范围，结束点留 7 天余量
+function buildRanges() {
+  const now = new Date();
+  const end = new Date(now);
+  end.setDate(end.getDate() + 7);
+  const back = (months: number) => {
+    const d = new Date(now);
+    d.setMonth(d.getMonth() - months);
+    return d;
+  };
+  return {
+    "3m": { start: back(3), end, label: "3个月" },
+    "6m": { start: back(6), end, label: "6个月" },
+    ytd: { start: new Date(now.getFullYear(), 0, 1), end, label: "全部" },
+  } as const;
+}
 // 事件类型 → 甘特状态色
 const EVENT_STATE: Record<string, string> = {
   met: "stable", chat_import: "stable", date: "warming", warming: "warming",
   cooling: "cooling", conflict: "coldwar", turning_point: "coldwar",
   reconnect: "warming", end: "ended", stable: "stable",
 };
-const TODAY = new Date("2026-08-13");
+const TODAY = new Date();
 
 function pct(date: Date, start: Date, end: Date) {
   return ((date.getTime() - start.getTime()) / (end.getTime() - start.getTime())) * 100;
@@ -33,11 +44,10 @@ const clamp = (p: number) => Math.max(0, Math.min(100, p));
 interface Bar { left: number; width: number; color: string; label: string; tip: string }
 
 export default function Gantt({ rows, onSelect }: { rows: GanttRow[]; onSelect: (id: number) => void }) {
+  const RANGES = useMemo(buildRanges, []);
   const [range, setRange] = useState<keyof typeof RANGES>("6m");
   const [tip, setTip] = useState<{ x: number; y: number; text: string } | null>(null);
-  const r = RANGES[range];
-  const start = useMemo(() => new Date(r.start + "T00:00:00"), [r]);
-  const end = useMemo(() => new Date(r.end + "T00:00:00"), [r]);
+  const { start, end } = RANGES[range];
 
   const months = useMemo(() => {
     const out: { label: string; left: number }[] = [];
@@ -53,6 +63,53 @@ export default function Gantt({ rows, onSelect }: { rows: GanttRow[]; onSelect: 
 
   function barsFor(row: GanttRow): Bar[] {
     const evs = [...row.events].sort((a, b) => a.time.localeCompare(b.time));
+    const fmt = (d: Date) => `${d.getMonth() + 1}月${d.getDate()}日`;
+    // 聊天真实时间跨度：以消息内容时间为准，而非导入/记录时刻
+    const firstMsg = row.first_message ? new Date(row.first_message) : null;
+    const lastMsg = row.last_message ? new Date(row.last_message) : null;
+
+    // AI 时期分段（PeriodAgent：LLM 按聊天内容在趋势突变点切分）优先于单条主状态
+    if (row.segments && row.segments.length > 0) {
+      const bars: Bar[] = [];
+      for (const s of row.segments) {
+        const segStart = new Date(s.start + "T00:00:00");
+        const segEnd = new Date(s.end + "T23:59:59");
+        if (segEnd < start || segStart > end) continue;
+        const l = clamp(pct(segStart < start ? start : segStart, start, end));
+        const r = clamp(pct(segEnd > end ? end : segEnd, start, end));
+        if (r - l <= 0.3) continue;
+        bars.push({
+          left: l, width: Math.max(r - l, 0.8), color: colorOf(s.state),
+          label: STATE_LABELS[s.state] || s.state,
+          tip: `${row.name} · ${fmt(segStart)}~${fmt(segEnd)} ${STATE_LABELS[s.state] || s.state}${s.summary ? "：" + s.summary : ""}`,
+        });
+      }
+      if (bars.length) return bars;
+    }
+
+    if (firstMsg && lastMsg) {
+      const l = clamp(pct(firstMsg < start ? start : firstMsg, start, end));
+      const r = clamp(pct(lastMsg > end ? end : lastMsg, start, end));
+      const bars: Bar[] = [{
+        left: l, width: Math.max(r - l, 0.8), color: row.state_color,
+        label: STATE_LABELS[row.state],
+        tip: `${row.name} · ${fmt(firstMsg)} ~ ${fmt(lastMsg)} · ${row.message_count}条消息（${STATE_LABELS[row.state]}）`,
+      }];
+      // 主条之后的业务事件（约会/转折点/结束等）画为小标记段；met/chat_import 是系统记录时刻，不作分段依据
+      for (const e of evs) {
+        if (e.type === "met" || e.type === "chat_import") continue;
+        const t = new Date(e.time);
+        if (t <= lastMsg || t > end) continue;
+        const state = EVENT_STATE[e.type] || row.state;
+        bars.push({
+          left: clamp(pct(t, start, end)), width: 0.9, color: colorOf(state),
+          label: STATE_LABELS[state] || state,
+          tip: `${row.name} · ${e.summary}（${fmt(t)}）`,
+        });
+      }
+      return bars;
+    }
+
     if (evs.length === 0) {
       // 无事件：用认识至今的一段当前状态
       return [{ left: 0, width: clamp(todayPct), color: row.state_color, label: STATE_LABELS[row.state], tip: `${row.name} · ${STATE_LABELS[row.state]}` }];

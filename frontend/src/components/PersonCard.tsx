@@ -18,16 +18,26 @@ const RANK_CLS = [
   "bg-gradient-to-br from-orange-200 to-orange-400 text-orange-900",
 ];
 
-export default function PersonCard({ card, rank, onOpen }: { card: Card; rank: number; onOpen: () => void }) {
+export default function PersonCard({ card, rank, onOpen, onDelete }: { card: Card; rank: number; onOpen: () => void; onDelete?: () => void }) {
   const sc = STATE_COLORS[card.state] || "#2563eb";
   const rankCls = rank <= 3 ? RANK_CLS[rank - 1] : "bg-line-2 text-ink-500";
   const radar = card.radar && card.radar.length === 6 ? card.radar : [50, 50, 50, 50, 50, 50];
   return (
     <div onClick={onOpen}
-      className="relative flex cursor-pointer flex-col gap-3.5 rounded-2xl border border-line bg-white p-[18px] shadow-card transition-all hover:-translate-y-0.5 hover:border-[#dce6f5] hover:shadow-card-lg">
+      className="group relative flex cursor-pointer flex-col gap-3.5 rounded-2xl border border-line bg-white p-[18px] shadow-card transition-all hover:-translate-y-0.5 hover:border-[#dce6f5] hover:shadow-card-lg">
       <span className={`absolute right-3.5 top-3.5 rounded-full px-2.5 py-0.5 text-[11px] font-extrabold tracking-wide ${rankCls}`}>
         NO.{rank}
       </span>
+      {onDelete && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onDelete(); }}
+          title="删除该对象及其数据"
+          className="absolute left-3.5 top-3.5 z-[5] grid h-6 w-6 place-items-center rounded-md text-ink-300 opacity-0 transition-all hover:bg-red-50 hover:text-red-500 group-hover:opacity-100">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+            <path d="M3 6h18M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14zM10 11v6M14 11v6" />
+          </svg>
+        </button>
+      )}
 
       <div className="flex items-center gap-3">
         <div className="grid h-[52px] w-[52px] shrink-0 place-items-center rounded-xl text-xl font-bold text-white"

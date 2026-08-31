@@ -65,7 +65,11 @@ export default function Home() {
             <div className="grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-4 p-5">
               {data && data.cards.length > 0 ? (
                 data.cards.map((c, i) => (
-                  <PersonCard key={c.id} card={c} rank={i + 1} onOpen={() => setSelected(c.id)} />
+                  <PersonCard key={c.id} card={c} rank={i + 1} onOpen={() => setSelected(c.id)}
+                    onDelete={() => {
+                      if (!window.confirm(`确定删除「${c.name}」吗？\n将删除其在 HeartMind 中的画像、聊天记录副本、时间轴与评分等全部数据（不影响微信原始数据）。`)) return;
+                      api.del(`/persons/${c.id}`).then(load).catch((e) => setError(e.message));
+                    }} />
                 ))
               ) : (
                 <div className="col-span-full">
