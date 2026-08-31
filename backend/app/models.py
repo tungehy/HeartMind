@@ -107,6 +107,11 @@ class Relationship(Base):
                             cascade="all, delete-orphan")
     advices = orm_rel("Advice", back_populates="relationship",
                       cascade="all, delete-orphan")
+    # 无外键级联声明的表也要纳入删除（SQLite 已开启 FK 约束）
+    turning_points = orm_rel("TurningPoint", cascade="all, delete-orphan")
+    stages = orm_rel("RelationshipStage", cascade="all, delete-orphan")
+    reports = orm_rel("Report", cascade="all, delete-orphan")
+    periods = orm_rel("RelationshipPeriod", cascade="all, delete-orphan")
 
 
 class RelationshipStage(Base):
@@ -174,6 +179,20 @@ class RelationshipEvent(Base):
     is_turning_point = Column(Boolean, default=False)
 
     relationship = orm_rel("Relationship", back_populates="events")
+
+
+class RelationshipPeriod(Base):
+    """AI 分析的关系时期分段：按聊天内容在趋势突变点切分。"""
+    __tablename__ = "relationship_periods"
+    id = Column(Integer, primary_key=True)
+    relationship_id = Column(Integer, ForeignKey("relationships.id"))
+    start_date = Column(String(10))          # YYYY-MM-DD
+    end_date = Column(String(10))
+    state = Column(String(32), default="stable")  # warming/stable/cooling/coldwar/ended
+    summary = Column(Text, default="")       # AI 对该时期的一句话解读
+    msg_count = Column(Integer, default=0)
+    engine = Column(String(16), default="rule")   # llm / rule
+    created_at = Column(DateTime, default=utcnow)
 
 
 class TurningPoint(Base):

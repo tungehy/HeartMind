@@ -7,20 +7,24 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from ..db import get_db
+from ..db import get_db, SessionLocal
 from .. import models
 from ..schemas import (
     PersonCreate, IngestText, IngestJson, ProfileAnswerIn, UserProfileIn,
-    DateCreate, SimulateIn,
+    DateCreate, SimulateIn, WechatExportIn,
 )
 from ..services import orchestrator as orch
 from ..services import ingestion_service as ing
+from ..services import wechat_export_service as wx
 from ..services import distill_service
 from ..services import profile_service as ps
 from ..agents.profile_builder import ProfileBuilderAgent
+from ..agents.memory_agent import MemoryAgent
+from ..agents.period_agent import PeriodAgent
 from ..agents.relationship_agents import MatchAgent, AdviceAgent, DateReviewAgent, TurningPointAgent
 from ..domain.stages import STAGE_LABELS, STATE_LABELS, STATE_COLORS
 
@@ -69,6 +73,22 @@ def create_person(payload: PersonCreate, db: Session = Depends(get_db)):
     return result
 
 
+@router.delete("/persons/{person_id}")
+def delete_person(person_id: int, db: Session = Depends(get_db)):
+    """删除相亲对象及其在本系统的全部数据（聊天记录/画像/记忆/时间轴/评分等）。
+    只操作 HeartMind 数据库，不触碰微信原始数据。"""
+    person = db.query(models.Person).filter_by(id=person_id).first()
+    if not person:
+        raise HTTPException(404, "对象不存在")
+    rel = db.query(models.Relationship).filter_by(person_id=person_id).first()
+    name = person.name
+    if rel:
+        db.delete(rel)  # 级联全部子表（含 turning_points/stages/reports）
+    db.delete(person)  # 级联 profile / relationship / persona skills
+    db.commit()
+    return {"deleted": True, "person_id": person_id, "name": name}
+
+
 @router.get("/persons")
 def list_persons(db: Session = Depends(get_db)):
     rels = db.query(models.Relationship).all()
@@ -87,7 +107,7 @@ def person_detail(person_id: int, db: Session = Depends(get_db)):
     metric = db.query(models.RelationshipMetric).filter_by(relationship_id=rel.id)\
         .order_by(models.RelationshipMetric.created_at.desc()).first()
     memories = db.query(models.Memory).filter_by(relationship_id=rel.id)\
-        .order_by(models.Memory.created_at.desc()).all()
+        .order_by(models.Memory.importance.desc(), models.Memory.created_at.desc()).all()
     events = db.query(models.RelationshipEvent).filter_by(relationship_id=rel.id)\
         .order_by(models.RelationshipEvent.time).all()
     advice = db.query(models.Advice).filter_by(relationship_id=rel.id)\
@@ -150,8 +170,56 @@ def profile_summary(person_id: int, db: Session = Depends(get_db)):
     return ps.summarize(facts, rel.stage)
 
 
+# ================= 关系时期分析 =================
+def _run_period_analysis(db: Session, rel: models.Relationship):
+    """LLM/规则划分关系时期并入库（先清旧段）。"""
+    messages = orch.relationship_messages(db, rel.id)
+    periods, engine = PeriodAgent().analyze(messages)
+    db.query(models.RelationshipPeriod).filter_by(relationship_id=rel.id).delete()
+    for p in periods:
+        db.add(models.RelationshipPeriod(relationship_id=rel.id, engine=engine, **p))
+    db.commit()
+    return periods, engine
+
+
+def _rebuild_memories(db: Session, rel: models.Relationship) -> tuple[int, str]:
+    """删旧记忆，用 MemoryAgent（LLM 优先）重抽取。"""
+    messages = orch.relationship_messages(db, rel.id)
+    mems, engine = MemoryAgent().analyze(messages)
+    db.query(models.Memory).filter_by(relationship_id=rel.id).delete()
+    for m in mems:
+        db.add(models.Memory(relationship_id=rel.id, content=m["content"],
+                             category=m["category"], source="ai",
+                             importance=m.get("importance", 0.7)))
+    db.commit()
+    return len(mems), engine
+
+
+def _post_import_bg(relationship_id: int):
+    """后台任务：导入聊天后异步跑 LLM 分析（记忆重抽取 + 时期分段），不阻塞导入响应。"""
+    db = SessionLocal()
+    try:
+        rel = db.query(models.Relationship).filter_by(id=relationship_id).first()
+        if rel:
+            _rebuild_memories(db, rel)
+            _run_period_analysis(db, rel)
+    finally:
+        db.close()
+
+
+@router.post("/persons/{person_id}/analyze-periods")
+def analyze_periods(person_id: int, db: Session = Depends(get_db)):
+    """重新分析该对象的聊天时期分段（同步，供手动刷新）。"""
+    rel = _get_rel(db, person_id)
+    periods, engine = _run_period_analysis(db, rel)
+    return {"engine": engine, "segments": [
+        {"start": p["start_date"], "end": p["end_date"], "state": p["state"],
+         "summary": p["summary"]} for p in periods]}
+
+
 # ================= 聊天导入 =================
-def _import(db: Session, person_name: str, events: list[dict], source: str):
+def _import(db: Session, person_name: str, events: list[dict], source: str,
+            background_tasks: BackgroundTasks | None = None):
     user = get_default_user(db)
     person = orch.get_or_create_person(db, person_name)
     rel = orch.get_or_create_relationship(db, user.id, person.id)
@@ -170,12 +238,8 @@ def _import(db: Session, person_name: str, events: list[dict], source: str):
             intent=e.get("intent", ""), entities=e.get("entities", []),
             importance=e.get("importance", 0.0), source=source))
 
-    # Memory 抽取
-    mems = ing.rule_engine.extract_memories(events)
-    for m in mems:
-        db.add(models.Memory(relationship_id=rel.id, content=m["content"],
-                             category=m["category"], source=source,
-                             importance=m.get("importance", 0.5)))
+    # Memory 抽取改由后台任务（MemoryAgent：LLM 优先）统一重抽取，避免规则噪音先入库
+    mems: list[dict] = []
 
     # Profile 自动抽取
     agent = ProfileBuilderAgent("person")
@@ -212,6 +276,8 @@ def _import(db: Session, person_name: str, events: list[dict], source: str):
 
     # Advice 生成
     _generate_advice(db, rel)
+    if background_tasks is not None:
+        background_tasks.add_task(_post_import_bg, rel.id)
     return {"person_id": person.id, "relationship_id": rel.id,
             "imported": len(events), "memories": len(mems),
             "turning_points": len(tps), "score": rel.score, "state": rel.state}
@@ -232,19 +298,59 @@ def _generate_advice(db: Session, rel: models.Relationship):
 
 
 @router.post("/import/text")
-def import_text(payload: IngestText, db: Session = Depends(get_db)):
+def import_text(payload: IngestText, background_tasks: BackgroundTasks,
+                db: Session = Depends(get_db)):
     events = ing.parse_text(payload.text, payload.person_name)
     if not events:
         raise HTTPException(400, "未能解析出任何消息，请检查格式")
-    return _import(db, payload.person_name, events, payload.source)
+    return _import(db, payload.person_name, events, payload.source, background_tasks)
 
 
 @router.post("/import/json")
-def import_json(payload: IngestJson, db: Session = Depends(get_db)):
+def import_json(payload: IngestJson, background_tasks: BackgroundTasks,
+                db: Session = Depends(get_db)):
     events = ing.parse_json_records(payload.records, payload.person_name)
     if not events:
         raise HTTPException(400, "未能解析出任何消息")
-    return _import(db, payload.person_name, events, payload.source)
+    return _import(db, payload.person_name, events, payload.source, background_tasks)
+
+
+# ================= 微信自动导出（对接 WeChatDataAnalysis） =================
+@router.get("/wechat/status")
+def wechat_status():
+    """微信导出服务是否已配置且可达，前端据此显示「自动导出」入口。"""
+    return {"configured": wx.service_configured(), "reachable": wx.check_reachable()}
+
+
+@router.get("/wechat/targets")
+def wechat_targets(account: str | None = None):
+    """列出微信会话联系人（显示名 + username），供用户选择要导入的对象。"""
+    try:
+        data = wx.list_targets(account)
+    except wx.WechatExportError as e:
+        raise HTTPException(502, str(e))
+    targets = [{"username": t.get("username"), "name": t.get("name"),
+                "display_name": t.get("displayName"), "is_group": t.get("isGroup", False)}
+               for t in data.get("targets", []) if not t.get("isGroup")]
+    return {"account": data.get("account"), "source": data.get("source"),
+            "targets": targets, "total": len(targets)}
+
+
+@router.post("/import/wechat")
+def import_wechat(payload: WechatExportIn, background_tasks: BackgroundTasks,
+                  db: Session = Depends(get_db)):
+    """自动导出指定微信联系人的聊天记录并导入分析。"""
+    if not payload.username:
+        raise HTTPException(400, "请先选择微信联系人（username 为空）")
+    try:
+        raw_messages, display_name = wx.export_contact_messages(
+            payload.username, payload.account, payload.start_time, payload.end_time)
+    except wx.WechatExportError as e:
+        raise HTTPException(502, str(e))
+    events = ing.parse_json_records(raw_messages, payload.person_name)
+    if not events:
+        raise HTTPException(400, "导出的消息中没有可解析的文本内容")
+    return _import(db, payload.person_name, events, "wechat", background_tasks)
 
 
 # ================= 时间轴 / 评分 / 匹配 =================
@@ -456,10 +562,23 @@ def dashboard(db: Session = Depends(get_db)):
     for r in rels:
         events = db.query(models.RelationshipEvent).filter_by(relationship_id=r.id)\
             .order_by(models.RelationshipEvent.time).all()
+        # 消息真实时间跨度：甘特条应以聊天内容时间为准，而非导入时刻
+        ts = db.query(func.min(models.Message.timestamp), func.max(models.Message.timestamp),
+                      func.count(models.Message.id))\
+            .filter(models.Message.relationship_id == r.id).first()
+        first_msg, last_msg, msg_count = (ts[0], ts[1], ts[2]) if ts else (None, None, 0)
+        # AI 时期分段（导入聊天后由 PeriodAgent 生成，LLM 优先/规则降级）
+        periods = db.query(models.RelationshipPeriod).filter_by(relationship_id=r.id)\
+            .order_by(models.RelationshipPeriod.start_date).all()
         gantt.append({
             "person_id": r.person_id, "name": r.person.name, "state": r.state,
             "state_color": STATE_COLORS.get(r.state), "score": r.score,
             "stage_label": STAGE_LABELS.get(r.stage, r.stage),
+            "first_message": first_msg.isoformat() if first_msg else None,
+            "last_message": last_msg.isoformat() if last_msg else None,
+            "message_count": msg_count or 0,
+            "segments": [{"start": p.start_date, "end": p.end_date, "state": p.state,
+                          "summary": p.summary, "engine": p.engine} for p in periods],
             "events": [{"time": e.time.isoformat(), "type": e.event_type,
                         "summary": e.summary, "is_turning_point": e.is_turning_point}
                        for e in events],

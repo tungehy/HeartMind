@@ -84,6 +84,9 @@ heartmind/
 ## 三个 Skill（抽象自开源项目）
 
 - **wechat-export**（源自 `WeChatDataAnalysis`）：按会话 `username` 导出特定对象聊天记录。
+  **已整合进主流程**：「新增相亲对象 → 导入聊天记录 → 微信自动导出」，
+  启动 WeChatDataAnalysis 服务并在 `backend/.env` 配置 `WECHAT_EXPORT_URL=http://127.0.0.1:10392`
+  后，选择联系人即可自动导出并导入分析，无需手工粘贴。
 - **persona-distill**（改造自 `love-skill`）：将相亲对象蒸馏为 5+1 层 Persona Skill。
 - **self-distill**（改造自 `yourself-skill`）：将用户蒸馏为 Self Memory + Persona 双层自我画像。
 
@@ -91,7 +94,8 @@ heartmind/
 
 ```powershell
 cd backend
-..\.venv\Scripts\python.exe test_flow.py
+..\.venv\Scripts\python.exe test_flow.py          # 9 个核心闭环（需后端运行中）
+..\.venv\Scripts\python.exe test_wechat_ingest.py # 微信导出链路离线自检（无需真实服务）
 ```
 
 覆盖：创建对象 → 画像 Loop → 导入聊天 → 时间轴 → 评分 → 匹配 → 约会复盘 → Skill 蒸馏 → 模拟对话 → Dashboard。

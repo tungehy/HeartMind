@@ -146,7 +146,7 @@ def person_to_card(db: Session, rel: models.Relationship) -> dict[str, Any]:
     facts = person_facts(db, person.id)
     messages = relationship_messages(db, rel.id)
     mems = db.query(models.Memory).filter_by(relationship_id=rel.id)\
-        .order_by(models.Memory.created_at.desc()).limit(3).all()
+        .order_by(models.Memory.importance.desc(), models.Memory.created_at.desc()).limit(3).all()
     latest_metric = db.query(models.RelationshipMetric)\
         .filter_by(relationship_id=rel.id).order_by(models.RelationshipMetric.created_at.desc()).first()
     advice = db.query(models.Advice).filter_by(relationship_id=rel.id)\
