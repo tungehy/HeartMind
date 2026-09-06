@@ -7,7 +7,11 @@ from pydantic import BaseModel
 
 class PersonCreate(BaseModel):
     name: str
-    description: str = ""          # 用户自然语言描述（可选）
+    description: str = ""  # 用户自然语言描述（可选）
+
+
+class PersonRename(BaseModel):
+    name: str
 
 
 class IngestText(BaseModel):

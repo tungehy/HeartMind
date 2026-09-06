@@ -26,6 +26,23 @@ export default function DetailDrawer({ personId, onClose }: { personId: number; 
   const [timeline, setTimeline] = useState<TimelineData | null>(null);
   const [loop, setLoop] = useState<ProfileLoop | null>(null);
   const [loading, setLoading] = useState(true);
+  const [editingName, setEditingName] = useState(false);
+  const [nameInput, setNameInput] = useState("");
+  const [nameError, setNameError] = useState("");
+
+  async function saveName() {
+    const name = nameInput.trim();
+    if (!name || !detail) return;
+    if (name === detail.name) { setEditingName(false); return; }
+    try {
+      await api.patch(`/persons/${personId}`, { name });
+      setEditingName(false);
+      setNameError("");
+      api.get<PersonDetail>(`/persons/${personId}`).then(setDetail);
+    } catch (e) {
+      setNameError(e instanceof Error ? e.message : "修改失败");
+    }
+  }
 
   useEffect(() => {
     setLoading(true);
@@ -62,7 +79,30 @@ export default function DetailDrawer({ personId, onClose }: { personId: number; 
                 {detail.name[0]}
               </div>
               <div className="min-w-0 flex-1">
-                <div className="text-[17px] font-bold">{detail.name}</div>
+                {editingName ? (
+                  <div>
+                    <div className="flex items-center gap-1.5">
+                      <input autoFocus value={nameInput}
+                        onChange={(e) => setNameInput(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter") saveName(); if (e.key === "Escape") setEditingName(false); }}
+                        className="w-36 rounded-md border border-blue-300 px-2 py-1 text-[15px] font-bold outline-none focus:border-blue-500" />
+                      <button onClick={saveName} className="rounded-md bg-blue-600 px-2 py-1 text-xs font-semibold text-white hover:bg-blue-700">保存</button>
+                      <button onClick={() => { setEditingName(false); setNameError(""); }} className="rounded-md px-2 py-1 text-xs text-ink-500 hover:bg-line-2">取消</button>
+                    </div>
+                    {nameError && <div className="mt-1 text-[11px] text-red-500">{nameError}</div>}
+                  </div>
+                ) : (
+                  <div className="group flex items-center gap-1.5">
+                    <span className="text-[17px] font-bold">{detail.name}</span>
+                    <button onClick={() => { setNameInput(detail.name); setEditingName(true); }}
+                      title="修改姓名"
+                      className="grid h-5 w-5 place-items-center rounded text-ink-300 opacity-0 transition-all hover:bg-line-2 hover:text-ink-600 group-hover:opacity-100">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M17 3a2.83 2.83 0 114 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
+                      </svg>
+                    </button>
+                  </div>
+                )}
                 <div className="mt-0.5 text-xs text-ink-400">
                   {detail.stage_label} · {detail.state_label} · {Math.round(detail.score)}分
                 </div>
