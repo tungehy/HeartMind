@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from ..db import get_db, SessionLocal
 from .. import models
 from ..schemas import (
-    PersonCreate, IngestText, IngestJson, ProfileAnswerIn, UserProfileIn,
+    PersonCreate, PersonRename, IngestText, IngestJson, ProfileAnswerIn, UserProfileIn,
     DateCreate, SimulateIn, WechatExportIn,
 )
 from ..services import orchestrator as orch
@@ -71,6 +71,24 @@ def create_person(payload: PersonCreate, db: Session = Depends(get_db)):
         result.update({"extracted": out["extracted"], "conflicts": out["conflicts"],
                        "profile_loop": nq})
     return result
+
+
+@router.patch("/persons/{person_id}")
+def rename_person(person_id: int, payload: PersonRename, db: Session = Depends(get_db)):
+    """修改对象姓名。消息/记忆/画像均挂在 id 上，不受影响。"""
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(400, "姓名不能为空")
+    person = db.query(models.Person).filter_by(id=person_id).first()
+    if not person:
+        raise HTTPException(404, "对象不存在")
+    dup = db.query(models.Person).filter(models.Person.name == name,
+                                         models.Person.id != person_id).first()
+    if dup:
+        raise HTTPException(409, f"已存在同名对象「{name}」")
+    person.name = name
+    db.commit()
+    return {"person_id": person_id, "name": name}
 
 
 @router.delete("/persons/{person_id}")

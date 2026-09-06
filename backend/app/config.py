@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     wechat_export_url: str = ""     # 例：http://127.0.0.1:10392
 
     app_name: str = "HeartMind"
-    cors_origins: str = "http://localhost:3000"
+    cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
 
     @property
     def cors_origin_list(self) -> list[str]:
